@@ -1,75 +1,83 @@
+import json
+
 class SessionLayer:
     def __init__(self, transport_layer, role="client", peer_ip=None):
         self.transport_layer = transport_layer
         self.role = role
         self.session_established = False
-        self.session_id = None
+        self.session_id = "open"
         self.peer_ip = peer_ip
 
     def start_session(self, dest_ip):
-        self.session_id = "SESSION1234"  # In practice, generate a unique session id.
-        syn_message = f"SYN::{self.session_id}"
-        print("SessionLayer (Client): Sending SYN...")
-        self.transport_layer.send(dest_ip, syn_message.encode('utf-8'))
+        # Send SYN
+        syn = {"type": "SYN", "session_id": self.session_id}
+        self.transport_layer.send(dest_ip, json.dumps(syn).encode('utf-8'))
         
-        response = self.transport_layer.receive()
-        if response is None:
-            print("SessionLayer (Client): No response received.")
+        # Receive SYN-ACK
+        syn_ack = self.transport_layer.receive()
+        if syn_ack is None:
             return False
-        
-        response_str = response.decode('utf-8')
-        if response_str.startswith("SYN-ACK::"):
-            parts = response_str.split("::")
-            if len(parts) == 2 and parts[1] == self.session_id:
-                ack_message = f"ACK::{self.session_id}"
-                print("SessionLayer (Client): Sending ACK...")
-                self.transport_layer.send(dest_ip, ack_message.encode('utf-8'))
+            
+        try:
+            syn_ack_data = json.loads(syn_ack.decode('utf-8'))
+            if syn_ack_data.get("type") == "SYN-ACK":
+                # Send ACK
+                ack = {"type": "ACK", "session_id": self.session_id}
+                self.transport_layer.send(dest_ip, json.dumps(ack).encode('utf-8'))
                 self.session_established = True
-                print("SessionLayer (Client): Session established.")
                 return True
-        
-        print("SessionLayer (Client): Session handshake failed.")
+        except:
+            pass
         return False
 
     def accept_session(self):
-        print("SessionLayer (Server): Waiting for SYN...")
-        message = self.transport_layer.receive()
-        if message is None:
-            print("SessionLayer (Server): No message received.")
+        # Wait for SYN
+        syn = self.transport_layer.receive()
+        if syn is None:
             return False
-        
-        message_str = message.decode('utf-8')
-        if message_str.startswith("SYN::"):
-            parts = message_str.split("::")
-            if len(parts) == 2:
-                self.session_id = parts[1]
-                syn_ack_message = f"SYN-ACK::{self.session_id}"
-                if self.peer_ip is None:
-                    print("SessionLayer (Server): peer_ip not set. Cannot send SYN-ACK.")
-                    return False
-                print("SessionLayer (Server): Sending SYN-ACK...")
-                self.transport_layer.send(self.peer_ip, syn_ack_message.encode('utf-8'))
-                print("SessionLayer (Server): Waiting for ACK...")
-                ack_response = self.transport_layer.receive()
-                if ack_response is None:
-                    print("SessionLayer (Server): No ACK received.")
-                    return False
-                ack_str = ack_response.decode('utf-8')
-                if ack_str.startswith("ACK::") and ack_str.split("::")[1] == self.session_id:
-                    self.session_established = True
-                    print("SessionLayer (Server): Session established.")
-                    return True
-        print("SessionLayer (Server): Session handshake failed.")
+            
+        try:
+            syn_data = json.loads(syn.decode('utf-8'))
+            if syn_data.get("type") == "SYN":
+                self.session_id = syn_data.get("session_id", "open")
+                
+                # Send SYN-ACK
+                syn_ack = {"type": "SYN-ACK", "session_id": self.session_id}
+                self.transport_layer.send(self.peer_ip, json.dumps(syn_ack).encode('utf-8'))
+                
+                # Wait for ACK
+                ack = self.transport_layer.receive()
+                if ack:
+                    ack_data = json.loads(ack.decode('utf-8'))
+                    if ack_data.get("type") == "ACK":
+                        self.session_established = True
+                        return True
+        except:
+            pass
         return False
 
-    def send_data(self, dest_ip, data: bytes):
+    def send_data(self, dest_ip, payload: bytes):
         if not self.session_established:
-            print("SessionLayer: Session not established. Cannot send data.")
+            print("[Session] Error: No active session")
             return
-        self.transport_layer.send(dest_ip, data)
+            
+        session_data = {
+            "session": self.session_id,
+            "data": payload.decode('utf-8', errors='replace')
+        }
+        session_json = json.dumps(session_data)
+        
+        print(f"[Session] Session Data: b'{session_json[:30]}...'")
+        self.transport_layer.send(dest_ip, session_json.encode('utf-8'))
 
     def receive_data(self) -> bytes:
         if not self.session_established:
-            print("SessionLayer: Session not established. Cannot receive data.")
+            print("[Session] Error: No active session")
             return None
-        return self.transport_layer.receive()
+            
+        data = self.transport_layer.receive()
+        if data:
+            session_data = json.loads(data.decode('utf-8'))
+            print(f"[Session] Session Data: b'{data.decode('utf-8')[:30]}...'")
+            return session_data.get("data", "").encode('utf-8')
+        return None
